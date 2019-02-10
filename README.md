@@ -62,7 +62,7 @@ user sstpd strongpassword *
 max sstpd "" 55.66.77.88
 ```
 
-Создайте конфигурационный файл sstp-server командой `nano sstpd.ini` и добавьте в него следующее содержимое:
+Создайте конфигурационный файл sstp-server командой `nano /etc/sstpd.ini` и добавьте в него следующее содержимое:
 ```ini
 [DEFAULT]
 # 1 to 50. Default 20, debug 10, verbose 5
@@ -92,7 +92,7 @@ local = 192.168.10.1
 remote = 192.168.10.0/24
 ```
 
-Осталось лишь запустить наш сервер командой `sudo nohup sstpd -f sstpd.ini &> sstpd.log&`
+Осталось лишь запустить наш сервер командой `sudo nohup sstpd -f /etc/sstpd.ini & > sstpd.log`
 
 *VPN сервер запущен! Теперь нужно настроить доступ в интернет для клиентов.*
 
@@ -107,11 +107,39 @@ remote = 192.168.10.0/24
 ```bash
 iptables -I INPUT -p tcp --dport 443 -m state --state NEW -j ACCEPT
 iptables -I INPUT -p gre -j ACCEPT
-iptables -t nat -I POSTROUTING -o eth0 -j MASQUERADE
+iptables -t nat -I POSTROUTING -o <ethernet> -j MASQUERADE
 iptables -I FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS  --clamp-mss-to-pmtu
 ```
 
 *Теперь у Вас есть свой SSTP VPN сервер с доступом к интернету!*
+
+### Демонизация
+
+Чтобы VPN-сервер запускался каждый раз при запуске компьютера, следует создать файл службы. Это делается путём создания файла в папке systemd `nano /etc/systemd/system/sstpd.service` со следующим содержимым:
+```bash
+[Unit]
+Description=SSTP VPN server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sstpd -f /etc/sstpd.ini
+ExecStartPost=/sbin/iptables -I INPUT -p tcp --dport 443 -m state --state NEW -j ACCEPT
+ExecStartPost=/sbin/iptables -I INPUT -p gre -j ACCEPT
+ExecStartPost=/sbin/iptables -I POSTROUTING -t nat -o <ethernet> -j MASQUERADE
+ExecStartPost=/sbin/iptables -I FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS  --clamp-mss-to-pmtu
+ExecStopPost=/sbin/iptables -D INPUT -p tcp --dport 443 -m state --state NEW -j ACCEPT
+ExecStopPost=/sbin/iptables -D INPUT -p gre -j ACCEPT
+ExecStopPost=/sbin/iptables -D POSTROUTING -t nat -o <ethernet> -j MASQUERADE
+ExecStopPost=/sbin/iptables -D FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS  --clamp-mss-to-pmtu
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+После этого осталось включить автозапуск службы командой `systemctl enable sstpd.service` и запустить VPN-сервер командой `systemctl start sstpd.service`.
 
 ### Рекомендации
 
@@ -120,5 +148,7 @@ iptables -I FORWARD -p tcp --tcp-flags SYN,RST SYN -s 192.168.10.0/24 -j TCPMSS 
 * Отредактируйте файл /etc/sysctl.conf `nano /etc/sysctl.conf`
 * Добавьте или раскомментируйте строку `net.ipv4.icmp_echo_ignore_all=1`
 * После этого необходимо запустить команду `sysctl -p` для применения изменений.
+
+Для автоматического обновления сертификата (если используется `certbot`) следует добавить в планировщик `crontab -e` данную строку `0 4 * * 1 certbot renew && systemctl restart sstpd`.
 
 Также рекомендуется сменить размер MTU путём добавления в конфигурационный файл `/etc/ppp/options.sstpd` строчки `mru 1396`
